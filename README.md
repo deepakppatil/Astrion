@@ -106,9 +106,11 @@ More detail:
 Everything runs on one machine with the mock agent; no Docker or Kubernetes
 is needed.
 
-- **macOS:** [docs/getting-started/local-macos.md](docs/getting-started/local-macos.md)
-- **Windows:** [docs/getting-started/local-windows.md](docs/getting-started/local-windows.md) (preview)
-- **Linux:** below.
+- **Step-by-step guide for macOS, Linux and Windows:** [How-to.md](How-to.md)
+- Platform-specific versions:
+  [macOS](docs/getting-started/local-macos.md),
+  [Windows](docs/getting-started/local-windows.md) (preview).
+- Linux in brief: below.
 
 ### Linux
 
@@ -118,20 +120,28 @@ You need:
 - PostgreSQL 15+ (your distribution's packages are fine);
 - the [Temporal CLI](https://docs.temporal.io/cli/setup-cli).
 
-The flow matches the macOS guide.
+[How-to.md](How-to.md) has the full walkthrough. In short:
 
 ```bash
 go build -o bin/ ./cmd/...
 (cd web && npm ci && npm run build)
-createdb astrion                                  # as a user allowed to create databases
+
+# Database: a dedicated role (Ubuntu requires passwords for localhost connections)
+sudo -u postgres psql -c "CREATE ROLE astrion LOGIN PASSWORD 'astrion' CREATEDB"
+sudo -u postgres createdb -O astrion astrion
+
+# A demo repository (commands that work on code need one)
+mkdir -p ~/astrion-demo && cd ~/astrion-demo && git init -b main && echo "# Demo" > README.md \
+  && git add . && git -c user.name=demo -c user.email=demo@example.com commit -m init && cd -
+
 temporal server start-dev --db-filename temporal.db   # terminal 1
 
 # terminal 2 (API)
-export ASTRION_DATABASE_URL="postgres://$USER@localhost:5432/astrion?sslmode=disable"
-ASTRION_HTTP_ADDR=127.0.0.1:8080 ASTRION_WEB_DIR=web/dist ./bin/astrion-api
+export ASTRION_DATABASE_URL="postgres://astrion:astrion@localhost:5432/astrion?sslmode=disable"
+ASTRION_HTTP_ADDR=127.0.0.1:8080 ASTRION_WEB_DIR=web/dist ASTRION_DEMO_REPO_URL="file://$HOME/astrion-demo" ./bin/astrion-api
 
 # terminal 3 (worker)
-export ASTRION_DATABASE_URL="postgres://$USER@localhost:5432/astrion?sslmode=disable"
+export ASTRION_DATABASE_URL="postgres://astrion:astrion@localhost:5432/astrion?sslmode=disable"
 PATH="$PWD/bin:$PATH" ./bin/astrion-worker
 ```
 

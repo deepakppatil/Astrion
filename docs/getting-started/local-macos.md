@@ -78,9 +78,11 @@ temporal server start-dev --db-filename temporal.db
 - `--db-filename` keeps workflow history across restarts. Omit it for a
   throwaway in-memory server.
 
-## 5. Optional: a demo repository
+## 5. Create a demo repository
 
-Commands that read code need a repository. Create a local one:
+Almost every command works on code, so jobs need a Git repository. Only
+`/Create-Jira` runs without one; anything else is rejected with
+*"command … requires at least one repository"*. Create a local one:
 
 ```bash
 mkdir -p ~/astrion-demo && cd ~/astrion-demo
@@ -101,7 +103,7 @@ Run from the repository root:
 export ASTRION_DATABASE_URL="postgres://$(whoami)@localhost:5432/astrion?sslmode=disable"
 export ASTRION_HTTP_ADDR=127.0.0.1:8080
 export ASTRION_WEB_DIR=web/dist
-export ASTRION_DEMO_REPO_URL="file://$HOME/astrion-demo"   # optional
+export ASTRION_DEMO_REPO_URL="file://$HOME/astrion-demo"   # from step 5
 ./bin/astrion-api
 ```
 

@@ -95,7 +95,11 @@ temporal server start-dev --db-filename temporal.db
 - If Windows Defender Firewall asks, allowing **private networks** is
   enough. Everything here uses loopback.
 
-## 5. Optional: a demo repository
+## 5. Create a demo repository
+
+Almost every command works on code, so jobs need a Git repository. Only
+`/Create-Jira` runs without one; anything else is rejected with
+*"command … requires at least one repository"*. Create a local one:
 
 ```powershell
 New-Item -ItemType Directory $HOME\astrion-demo | Out-Null
@@ -118,7 +122,7 @@ Run from the repository root:
 $env:ASTRION_DATABASE_URL = "postgres://postgres:YOUR_PASSWORD@localhost:5432/astrion?sslmode=disable"
 $env:ASTRION_HTTP_ADDR = "127.0.0.1:8080"
 $env:ASTRION_WEB_DIR = "web\dist"
-$env:ASTRION_DEMO_REPO_URL = "file:///C:/Users/<you>/astrion-demo"   # optional, from step 5
+$env:ASTRION_DEMO_REPO_URL = "file:///C:/Users/<you>/astrion-demo"   # from step 5
 .\bin\astrion-api.exe
 ```
 
