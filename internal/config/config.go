@@ -76,7 +76,14 @@ func Load() (*Config, error) {
 	}
 	c.MaxArtifactBytes = n
 	if cmd := env("ASTRION_SUPERVISOR_COMMAND", ""); cmd != "" {
-		c.SupervisorCommand = strings.Fields(cmd)
+		// A path to an existing file is used verbatim so that paths with
+		// spaces (common on Windows and macOS) work; otherwise the value is a
+		// whitespace-separated command line.
+		if st, err := os.Stat(cmd); err == nil && !st.IsDir() {
+			c.SupervisorCommand = []string{cmd}
+		} else {
+			c.SupervisorCommand = strings.Fields(cmd)
+		}
 	} else {
 		c.SupervisorCommand = []string{"astrion-supervisor"}
 	}

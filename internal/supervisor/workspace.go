@@ -18,6 +18,7 @@ import (
 
 	"github.com/deepakppatil/astrion/internal/domain"
 	"github.com/deepakppatil/astrion/internal/execapi"
+	"github.com/deepakppatil/astrion/internal/procgroup"
 )
 
 var safeName = regexp.MustCompile(`[^A-Za-z0-9._\-]+`)
@@ -109,9 +110,9 @@ func (s *Supervisor) git(ctx context.Context, dir string, extraEnv []string, arg
 	defer cancel()
 	cmd := exec.CommandContext(ctx, s.cfg.Git, args...)
 	cmd.Dir = dir
-	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + s.homeDir,
+	cmd.Env = append(append(procgroup.BaseEnv(s.homeDir, os.TempDir()),
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Astrion", "GIT_AUTHOR_EMAIL=astrion@localhost",
-		"GIT_COMMITTER_NAME=Astrion", "GIT_COMMITTER_EMAIL=astrion@localhost"}, extraEnv...)
+		"GIT_COMMITTER_NAME=Astrion", "GIT_COMMITTER_EMAIL=astrion@localhost"), extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
+	"github.com/deepakppatil/astrion/internal/procgroup"
 	"github.com/deepakppatil/astrion/internal/provider"
 )
 
@@ -46,7 +46,7 @@ func New(name, baseDir string) (*Provider, error) {
 func (p *Provider) Name() string { return p.name }
 
 func (p *Provider) Validate(context.Context) error {
-	return syscall.Access(p.baseDir, 2 /* W_OK */)
+	return procgroup.Writable(p.baseDir)
 }
 
 func (p *Provider) dir(execID string) string {
@@ -94,13 +94,10 @@ func (p *Provider) Allocate(_ context.Context, spec provider.Spec) (provider.Ref
 	}
 	cmd := exec.Command(spec.Command[0], spec.Command[1:]...)
 	cmd.Dir = filepath.Join(d, "workspace")
-	env := []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + filepath.Join(d, "home"),
-		"TMPDIR=" + filepath.Join(d, "tmp"),
-		"ASTRION_SECRETS_DIR=" + filepath.Join(d, "secrets"),
-		"ASTRION_WORKSPACE_DIR=" + filepath.Join(d, "workspace"),
-	}
+	env := append(procgroup.BaseEnv(filepath.Join(d, "home"), filepath.Join(d, "tmp")),
+		"ASTRION_SECRETS_DIR="+filepath.Join(d, "secrets"),
+		"ASTRION_WORKSPACE_DIR="+filepath.Join(d, "workspace"),
+	)
 	for k, v := range spec.Env {
 		env = append(env, k+"="+v)
 	}
@@ -110,15 +107,14 @@ func (p *Provider) Allocate(_ context.Context, spec provider.Spec) (provider.Ref
 		return provider.Ref{}, err
 	}
 	cmd.Stdout, cmd.Stderr = logf, logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		logf.Close()
 		return provider.Ref{}, fmt.Errorf("start: %w", err)
 	}
 	m := meta{Owner: spec.Owner, PID: cmd.Process.Pid, Created: time.Now().UTC()}
 	b, _ := json.Marshal(m)
 	if err := os.WriteFile(filepath.Join(d, "meta.json"), b, 0o600); err != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = procgroup.Kill(cmd.Process.Pid)
 		logf.Close()
 		return provider.Ref{}, err
 	}
@@ -127,7 +123,7 @@ func (p *Provider) Allocate(_ context.Context, spec provider.Spec) (provider.Ref
 	go func() {
 		var timer *time.Timer
 		if deadline > 0 {
-			timer = time.AfterFunc(deadline, func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+			timer = time.AfterFunc(deadline, func() { _ = procgroup.Kill(cmd.Process.Pid) })
 		}
 		err := cmd.Wait()
 		if timer != nil {
@@ -174,7 +170,7 @@ func (p *Provider) status(id string) (provider.Status, error) {
 		}
 		return st, nil
 	}
-	if syscall.Kill(m.PID, 0) == nil {
+	if procgroup.Alive(m.PID) {
 		st.Phase = provider.PhaseRunning
 	} else {
 		st.Phase = provider.PhaseFailed
@@ -198,14 +194,14 @@ func (p *Provider) Terminate(_ context.Context, ref provider.Ref) error {
 		var m meta
 		if json.Unmarshal(b, &m) == nil && m.PID > 0 {
 			if _, err := os.Stat(filepath.Join(d, "exit")); err != nil {
-				_ = syscall.Kill(-m.PID, syscall.SIGTERM)
+				_ = procgroup.Terminate(m.PID)
 				for i := 0; i < 20; i++ {
-					if syscall.Kill(m.PID, 0) != nil {
+					if !procgroup.Alive(m.PID) {
 						break
 					}
 					time.Sleep(100 * time.Millisecond)
 				}
-				_ = syscall.Kill(-m.PID, syscall.SIGKILL)
+				_ = procgroup.Kill(m.PID)
 			}
 		}
 	}

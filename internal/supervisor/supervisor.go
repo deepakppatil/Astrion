@@ -22,12 +22,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/deepakppatil/astrion/internal/agent"
 	"github.com/deepakppatil/astrion/internal/domain"
 	"github.com/deepakppatil/astrion/internal/execapi"
+	"github.com/deepakppatil/astrion/internal/procgroup"
 	"github.com/deepakppatil/astrion/internal/redact"
 )
 
@@ -288,14 +288,7 @@ func (s *Supervisor) loadSecretsForRedaction() {
 func (s *Supervisor) runAgent(ctx context.Context, adapter agent.Adapter, inv agent.Invocation, workDir string) (int, error) {
 	cmd := exec.Command(inv.Path, inv.Args...)
 	cmd.Dir = workDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + s.homeDir,
-		"TMPDIR=" + os.TempDir(),
-		"LANG=C.UTF-8",
-		"ASTRION_OUTPUT_DIR=" + s.outDir,
-	}
+	cmd.Env = append(procgroup.BaseEnv(s.homeDir, os.TempDir()), "ASTRION_OUTPUT_DIR="+s.outDir)
 	for k, v := range inv.Env {
 		if strings.HasPrefix(k, "ASTRION_EXECUTION_TOKEN") {
 			continue
@@ -316,7 +309,7 @@ func (s *Supervisor) runAgent(ctx context.Context, adapter agent.Adapter, inv ag
 			return -1, err
 		}
 	}
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return -1, err
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -375,9 +368,9 @@ func (s *Supervisor) terminate(cmd *exec.Cmd) {
 	if cmd.Process == nil {
 		return
 	}
-	pgid := -cmd.Process.Pid
-	_ = syscall.Kill(pgid, syscall.SIGTERM)
-	t := time.AfterFunc(s.cfg.KillGrace, func() { _ = syscall.Kill(pgid, syscall.SIGKILL) })
+	pid := cmd.Process.Pid
+	_ = procgroup.Terminate(pid)
+	t := time.AfterFunc(s.cfg.KillGrace, func() { _ = procgroup.Kill(pid) })
 	go func() {
 		// Ensure the timer is released once the process is gone.
 		for cmd.ProcessState == nil {
