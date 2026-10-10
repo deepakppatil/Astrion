@@ -1,0 +1,25 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Local runtime state
+/.astrion/
+/tmp/
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local env overrides
+.env
+.env.local
+go.work
+go.work.sum

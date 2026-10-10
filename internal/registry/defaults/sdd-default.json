@@ -1,0 +1,192 @@
+{
+  "framework": {
+    "id": "fw_sdd_default",
+    "name": "sdd-default",
+    "version": "1.0.0",
+    "source": "builtin://sdd-default",
+    "revision": "v1.0.0",
+    "discoveryStrategy": "DECLARED",
+    "compatibleAgents": ["mock", "claude-code", "copilot-cli"],
+    "requiredTools": ["git"]
+  },
+  "commands": [
+    {
+      "id": "cmd_shape_spec", "canonical": "/shape-spec", "displayName": "Shape spec",
+      "description": "Shape a raw idea into a structured requirements outline, asking clarifying questions.",
+      "phase": "PLAN", "personas": ["business_analyst", "architect"],
+      "inputs": [
+        {"name": "idea", "label": "Idea or problem statement", "type": "text", "required": true}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "requirements", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 3600,
+      "hitl": {"maxWaitSeconds": 86400, "onTimeout": "NEEDS_INTERVENTION"}
+    },
+    {
+      "id": "cmd_write_spec", "canonical": "/write-spec", "displayName": "Write spec",
+      "description": "Generate or refine the business requirements specification and acceptance criteria.",
+      "phase": "PLAN", "personas": ["business_analyst"],
+      "inputs": [
+        {"name": "specName", "label": "Specification name", "type": "string", "required": true, "maxLength": 120},
+        {"name": "sourceArtifactId", "label": "Shaped requirements artifact", "type": "artifactRef", "required": false}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "specification", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 3600,
+      "hitl": {"maxWaitSeconds": 86400, "onTimeout": "NEEDS_INTERVENTION"}
+    },
+    {
+      "id": "cmd_create_task", "canonical": "/create-task", "displayName": "Create tasks",
+      "description": "Decompose an approved specification into implementation tasks.",
+      "phase": "PLAN", "personas": ["business_analyst", "developer"],
+      "inputs": [
+        {"name": "specArtifactId", "label": "Specification artifact", "type": "artifactRef", "required": false}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "task-breakdown", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 3600
+    },
+    {
+      "id": "cmd_plan_migrate", "canonical": "/Plan-migrate", "displayName": "Plan migration",
+      "description": "Produce a migration plan for the selected repositories (framework-provided command; casing preserved).",
+      "phase": "PLAN", "personas": ["business_analyst", "architect"],
+      "inputs": [
+        {"name": "target", "label": "Migration target", "type": "string", "required": true, "maxLength": 200}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "migration-plan", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 5400
+    },
+    {
+      "id": "cmd_create_jira", "canonical": "/Create-Jira", "displayName": "Create Jira issues",
+      "description": "Create Jira issues from tasks produced by /create-task. External side effect: requires approval.",
+      "phase": "PLAN", "personas": ["business_analyst"],
+      "inputs": [
+        {"name": "taskArtifactId", "label": "Task breakdown artifact", "type": "artifactRef", "required": true},
+        {"name": "jiraProject", "label": "Jira project key", "type": "string", "required": true, "maxLength": 10}
+      ],
+      "repositoryAccess": "NONE",
+      "expectedArtifacts": [{"type": "jira-links", "required": true}],
+      "sideEffects": ["EXTERNAL_TICKET"],
+      "approval": {"beforeExecution": true, "approverRole": "business_analyst"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "id": "cmd_build_context", "canonical": "/build-context", "displayName": "Build context",
+      "description": "Build or update engineering context for the workspace repositories.",
+      "phase": "DESIGN", "personas": ["architect", "developer"],
+      "inputs": [
+        {"name": "focus", "label": "Focus area", "type": "string", "required": false, "maxLength": 200}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "engineering-context", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 3600
+    },
+    {
+      "id": "cmd_build_architecture", "canonical": "/build-architecture", "displayName": "Build architecture",
+      "description": "Generate architecture artifacts, decisions, constraints, and open questions.",
+      "phase": "DESIGN", "personas": ["architect"],
+      "inputs": [
+        {"name": "specArtifactId", "label": "Approved specification", "type": "artifactRef", "required": false},
+        {"name": "style", "label": "Output format", "type": "enum", "enum": ["markdown", "c4-json", "adr-set"], "required": false, "default": "markdown"}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "architecture", "required": true}, {"type": "decision-log", "required": false}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 5400,
+      "hitl": {"maxWaitSeconds": 172800, "onTimeout": "NEEDS_INTERVENTION"}
+    },
+    {
+      "id": "cmd_implement_task", "canonical": "/implement-task", "displayName": "Implement task",
+      "description": "Implement an approved task on an isolated working branch and run required tests.",
+      "phase": "IMPLEMENT", "personas": ["developer"],
+      "inputs": [
+        {"name": "taskId", "label": "Task identifier", "type": "string", "required": true, "maxLength": 120},
+        {"name": "openChangeRequest", "label": "Open PR/MR when done", "type": "boolean", "required": false, "default": false}
+      ],
+      "repositoryAccess": "WRITE",
+      "expectedArtifacts": [{"type": "diff", "required": true}, {"type": "execution-summary", "required": true}, {"type": "test-report", "required": false}],
+      "sideEffects": ["REPOSITORY_WRITE"], "timeoutSeconds": 7200
+    },
+    {
+      "id": "cmd_orchestrate_task", "canonical": "/orchestrate-task", "displayName": "Orchestrate task",
+      "description": "Run a framework-defined multi-step implementation workflow.",
+      "phase": "IMPLEMENT", "personas": ["developer"],
+      "inputs": [
+        {"name": "taskId", "label": "Task identifier", "type": "string", "required": true, "maxLength": 120}
+      ],
+      "repositoryAccess": "WRITE",
+      "expectedArtifacts": [{"type": "diff", "required": true}, {"type": "execution-summary", "required": true}],
+      "sideEffects": ["REPOSITORY_WRITE"], "timeoutSeconds": 14400
+    },
+    {
+      "id": "cmd_implement_jira", "canonical": "/implement-jira", "displayName": "Implement Jira issue",
+      "description": "Resolve a Jira issue, retrieve authorized context, and implement it.",
+      "phase": "IMPLEMENT", "personas": ["developer"],
+      "inputs": [
+        {"name": "jiraKey", "label": "Jira issue", "type": "jiraKey", "required": true}
+      ],
+      "repositoryAccess": "WRITE",
+      "expectedArtifacts": [{"type": "diff", "required": true}, {"type": "execution-summary", "required": true}],
+      "sideEffects": ["REPOSITORY_WRITE"], "timeoutSeconds": 7200
+    },
+    {
+      "id": "cmd_run_tests", "canonical": "/run-tests", "displayName": "Run tests",
+      "description": "Run framework-defined and repository-native tests for a revision; produces a test report.",
+      "phase": "TEST", "personas": ["qa_engineer", "developer"],
+      "inputs": [
+        {"name": "category", "label": "Test category", "type": "enum", "enum": ["unit", "integration", "regression", "security", "all"], "required": true}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "test-report", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 7200
+    },
+    {
+      "id": "cmd_prepare_deployment", "canonical": "/prepare-deployment", "displayName": "Prepare deployment",
+      "description": "Validate deployment readiness and render deployment manifests without applying them.",
+      "phase": "DEPLOY", "personas": ["release_engineer"],
+      "inputs": [
+        {"name": "environment", "label": "Target environment", "type": "enum", "enum": ["dev", "staging", "production"], "required": true}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "deployment-plan", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 3600
+    },
+    {
+      "id": "cmd_deploy_production", "canonical": "/deploy", "displayName": "Deploy to production",
+      "description": "Execute a production deployment through the configured pipeline. Requires explicit production approval.",
+      "phase": "DEPLOY", "personas": ["release_engineer"],
+      "inputs": [
+        {"name": "version", "label": "Version to deploy", "type": "string", "required": true, "maxLength": 100},
+        {"name": "deploymentPlanArtifactId", "label": "Approved deployment plan", "type": "artifactRef", "required": true}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "deployment-report", "required": true}],
+      "sideEffects": ["DEPLOYMENT_PRODUCTION"],
+      "approval": {"beforeExecution": true, "approverRole": "release_engineer", "productionApproval": true},
+      "timeoutSeconds": 3600,
+      "hitl": {"maxWaitSeconds": 14400, "onTimeout": "FAIL"}
+    },
+    {
+      "id": "cmd_diagnose", "canonical": "/diagnose", "displayName": "Diagnose issue",
+      "description": "Analyze a defect or operational issue and produce a diagnostic report.",
+      "phase": "MAINTAIN", "personas": ["release_engineer", "developer"],
+      "inputs": [
+        {"name": "symptom", "label": "Observed symptom", "type": "text", "required": true}
+      ],
+      "repositoryAccess": "READ",
+      "expectedArtifacts": [{"type": "diagnostic-report", "required": true}],
+      "sideEffects": ["NONE"], "timeoutSeconds": 3600
+    },
+    {
+      "id": "cmd_update_dependencies", "canonical": "/update-dependencies", "displayName": "Update dependencies",
+      "description": "Propose dependency updates on a working branch under the same review policies as implementation.",
+      "phase": "MAINTAIN", "personas": ["release_engineer", "developer"],
+      "inputs": [
+        {"name": "scope", "label": "Scope", "type": "enum", "enum": ["security-only", "minor", "all"], "required": true}
+      ],
+      "repositoryAccess": "WRITE",
+      "expectedArtifacts": [{"type": "diff", "required": true}, {"type": "execution-summary", "required": true}],
+      "sideEffects": ["REPOSITORY_WRITE"], "timeoutSeconds": 7200
+    }
+  ]
+}
