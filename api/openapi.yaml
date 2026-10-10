@@ -1,0 +1,1549 @@
+openapi: 3.1.0
+info:
+  title: Astrion Control-Plane API
+  version: 1.0.0
+  summary: Run AI coding agents through the SDLC with durable human-in-the-loop.
+  description: |
+    Public REST API of the Astrion control plane (`astrion-api`).
+
+    **Conventions**
+    - All endpoints are under `/api/v1` and require `Authorization: Bearer <token>`
+      (OIDC access token in production; dev tokens only when `ASTRION_ENV` is
+      not `production`). Tokens are **never** accepted in URLs.
+    - Every resource is tenant-scoped. IDs from another tenant return `404`.
+    - The server authorizes every call. Fields such as `actions` and
+      `canRespond` are hints for user interfaces; the server re-checks.
+    - Mutating calls that create things accept an `Idempotency-Key` header.
+      Repeating a request with the same key and body returns the original
+      result; the same key with a different body returns `409`.
+    - Request bodies are strict JSON: unknown fields are rejected (`422`).
+    - Errors use the `Error` schema. Validation errors (`422`) name the `field`.
+    - Lists return `{ "items": [...] }`.
+
+    The internal API used by execution environments is specified separately in
+    `execution-api.yaml`.
+  license:
+    name: Proprietary
+servers:
+  - url: http://localhost:8080
+    description: Local development
+security:
+  - bearerAuth: []
+tags:
+  - name: session
+  - name: workspaces
+  - name: registry
+    description: Agents, frameworks, commands, execution pools, integrations.
+  - name: jobs
+  - name: interactions
+    description: Durable human-in-the-loop questions and approvals.
+  - name: artifacts
+  - name: audit
+  - name: health
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness
+      security: []
+      operationId: healthz
+      responses:
+        "200":
+          description: Process is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness (database reachable)
+      security: []
+      operationId: readyz
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "503":
+          description: Database unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+  /metrics:
+    get:
+      tags: [health]
+      summary: Prometheus metrics
+      description: Restrict to the cluster network; do not expose via public ingress.
+      security: []
+      operationId: metrics
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/v1/me:
+    get:
+      tags: [session]
+      summary: Current user and effective permissions
+      operationId: getMe
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/dashboard:
+    get:
+      tags: [session]
+      summary: Tenant job statistics
+      operationId: getDashboard
+      responses:
+        "200":
+          description: Statistics.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dashboard" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/workspaces:
+    get:
+      tags: [workspaces]
+      summary: List workspaces
+      operationId: listWorkspaces
+      responses:
+        "200":
+          description: Workspaces visible to the caller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [workspaces]
+      summary: Create a workspace
+      description: Requires `workspace:write`.
+      operationId: createWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceRequest" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /api/v1/workspaces/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [workspaces]
+      summary: Get a workspace (with repositories)
+      operationId: getWorkspace
+      responses:
+        "200":
+          description: The workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [workspaces]
+      summary: Update a workspace (partial)
+      description: |
+        Requires `workspace:write`. Only fields present in the body change;
+        absent fields keep their current values. An explicit `null` for a list
+        clears it.
+      operationId: updateWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspacePatch" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /api/v1/workspaces/{id}/repositories:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [workspaces]
+      summary: List repositories in a workspace
+      operationId: listRepositories
+      responses:
+        "200":
+          description: Repositories.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RepositoryList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [workspaces]
+      summary: Add a repository
+      description: |
+        Requires `workspace:write`. `url` must be `https` (or `file` outside
+        production). URLs with embedded credentials are rejected; use
+        `credentialRef` (a secret-manager reference) instead.
+      operationId: addRepository
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RepositoryRequest" }
+      responses:
+        "201":
+          description: Added.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Repository" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /api/v1/workspaces/{id}/repositories/{repoId}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+      - name: repoId
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [workspaces]
+      summary: Remove a repository
+      description: Requires `workspace:write`.
+      operationId: removeRepository
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/agents:
+    get:
+      tags: [registry]
+      summary: List agent profiles (latest versions) with adapter capabilities
+      description: "`environment` is only returned to holders of `agent:configure`."
+      operationId: listAgents
+      responses:
+        "200":
+          description: Agent profiles.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentProfileList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [registry]
+      summary: Create or version an agent profile
+      description: Requires `agent:configure`. Saving an existing profile ID creates a new version.
+      operationId: saveAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentProfile" }
+      responses:
+        "201":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /api/v1/agents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [registry]
+      summary: Get an agent profile
+      operationId: getAgent
+      parameters:
+        - name: version
+          in: query
+          description: Specific version; latest when omitted.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/frameworks:
+    get:
+      tags: [registry]
+      summary: List framework profiles
+      operationId: listFrameworks
+      responses:
+        "200":
+          description: Frameworks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FrameworkList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/frameworks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [registry]
+      summary: Get a framework profile
+      operationId: getFramework
+      responses:
+        "200":
+          description: The framework.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FrameworkProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/frameworks/{id}/commands:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [registry]
+      summary: List commands the caller may run
+      description: |
+        Filtered by the caller's permissions and, optionally, by phase and
+        agent adapter. Canonical names keep their exact casing
+        (for example `/Plan-migrate`).
+      operationId: listCommands
+      parameters:
+        - name: phase
+          in: query
+          schema: { $ref: "#/components/schemas/Phase" }
+        - name: agent
+          in: query
+          description: Agent adapter provider (for example `mock`).
+          schema: { type: string }
+        - name: all
+          in: query
+          description: Include unapproved commands (administrators).
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Commands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommandList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/execution-pools:
+    get:
+      tags: [registry]
+      summary: List execution pools permitted for the tenant
+      operationId: listPools
+      responses:
+        "200":
+          description: Pools, and whether the caller may choose one explicitly (`provider:select`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/integrations:
+    get:
+      tags: [registry]
+      summary: Integration status
+      operationId: listIntegrations
+      responses:
+        "200":
+          description: Integrations.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IntegrationList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/jobs:
+    get:
+      tags: [jobs]
+      summary: List jobs (newest first)
+      operationId: listJobs
+      parameters:
+        - name: state
+          in: query
+          description: Filter by state; repeat or comma-separate for several.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { $ref: "#/components/schemas/JobState" }
+        - name: workspaceId
+          in: query
+          schema: { type: string }
+        - name: mine
+          in: query
+          description: Only jobs the caller initiated.
+          schema: { type: boolean }
+        - name: before
+          in: query
+          description: Cursor from `nextBefore` (RFC 3339 timestamp).
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: A page of jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Invalid" }
+    post:
+      tags: [jobs]
+      summary: Submit a job (run a framework command)
+      description: |
+        Returns `202` with the job ID once the job is **durably accepted**
+        (state `SUBMITTED`). Execution proceeds asynchronously; follow it with
+        `GET /jobs/{id}/events`.
+
+        The server re-checks: phase execution permission, command visibility
+        and approval, inputs against the command schema (unknown inputs are
+        rejected), repository membership, agent compatibility, and explicit
+        pool selection (`provider:select`). Command names are case-sensitive;
+        a near miss returns `422` with a hint.
+      operationId: submitJob
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmitJobRequest" }
+            example:
+              workspaceId: ws_06gjbj61g0f7x905pm3t3vythr
+              command: /write-spec
+              inputs: { specName: Checkout flow }
+              repositories: [{ repositoryId: repo_06gjbj8r0g59pvk3hh6vx3echm, revision: main }]
+      responses:
+        "202":
+          description: Accepted (or replayed with the same `Idempotency-Key`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Invalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/jobs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [jobs]
+      summary: Get a job
+      operationId: getJob
+      responses:
+        "200":
+          description: The job, its legal next states, and the actions the caller may take.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/jobs/{id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [jobs]
+      summary: Request cancellation
+      description: |
+        Initiator or `job:cancel:any`. Records the request and wakes the
+        workflow, which stops the agent, cleans up, and ends in `CANCELLED`.
+        Idempotent while the job is active.
+      operationId: cancelJob
+      responses:
+        "202":
+          description: Cancellation requested.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /api/v1/jobs/{id}/retry:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [jobs]
+      summary: Retry a failed, cancelled, or timed-out job
+      description: |
+        Creates a **new** job with the same parameters (`retryOf` links them);
+        the original stays immutable. The command is re-resolved at its
+        current version and re-authorized. Without an `Idempotency-Key`, one
+        retry per (job, user) is created.
+      operationId: retryJob
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: The new job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Invalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/jobs/{id}/operator-actions:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [jobs]
+      summary: Resolve NEEDS_INTERVENTION
+      description: |
+        Initiator or `job:cancel:any`, only while the job is `NEEDS_INTERVENTION`.
+        `retry` starts a fresh attempt (a lost process is never claimed
+        restored); `reopen` re-opens a timed-out interaction; `cancel` ends the
+        job. Audited before delivery.
+      operationId: operatorAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OperatorActionRequest" }
+      responses:
+        "202":
+          description: Accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Invalid" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /api/v1/jobs/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [jobs]
+      summary: Live job events (Server-Sent Events)
+      description: |
+        Streams events from the job's transactional outbox:
+
+        ```
+        id: 42
+        event: job.status_changed
+        data: {"id":42,"jobId":"job_…","type":"job.status_changed","payload":{"from":"QUEUED","to":"PROVISIONING","step":"provisioning attempt 1"},"createdAt":"…"}
+        ```
+
+        Event types: `job.status_changed`, `job.step_changed`, `job.log_batch`,
+        `interaction.input_required`, `interaction.approval_required`,
+        `interaction.resolved`, `artifact.available`, `job.failed`,
+        `cleanup.failed`, `job.completed`, and finally `end` once the job is
+        terminal and all events are delivered.
+
+        Resume after a disconnect by sending `Last-Event-ID`. The token must be
+        sent in the `Authorization` header (use `fetch`, not `EventSource`).
+      operationId: streamJobEvents
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          description: Resume after this event ID.
+          schema: { type: integer, format: int64 }
+        - name: types
+          in: query
+          description: Comma-separated event types to include.
+          schema: { type: string }
+      responses:
+        "200":
+          description: An SSE stream; each `data` line is a `JobEvent`.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/jobs/{id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [jobs]
+      summary: Job logs (redacted agent and supervisor output)
+      operationId: getJobLogs
+      parameters:
+        - name: after
+          in: query
+          description: Cursor (`next` from the previous page).
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          description: Log batches per page.
+          schema: { type: integer, default: 200 }
+        - name: format
+          in: query
+          description: "`text` downloads the complete log as plain text."
+          schema: { type: string, enum: [text] }
+      responses:
+        "200":
+          description: A page of log lines, or a text download.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogPage" }
+            text/plain:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/jobs/{id}/artifacts:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [artifacts]
+      summary: List user-visible artifacts of a job
+      operationId: listJobArtifacts
+      responses:
+        "200":
+          description: Artifacts (internal artifacts such as checkpoints are omitted).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/jobs/{id}/interactions:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [interactions]
+      summary: Interaction history of a job
+      operationId: listJobInteractions
+      responses:
+        "200":
+          description: Interactions (not-yet-opened ones are omitted).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InteractionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/jobs/{id}/executions:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [jobs]
+      summary: Execution attempts of a job
+      operationId: listJobExecutions
+      responses:
+        "200":
+          description: One entry per attempt.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExecutionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/artifacts/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [artifacts]
+      summary: Artifact metadata
+      operationId: getArtifact
+      responses:
+        "200":
+          description: Metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Artifact" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/artifacts/{id}/content:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [artifacts]
+      summary: Download artifact content
+      description: |
+        Served with `Content-Security-Policy: sandbox; default-src 'none'` and
+        `X-Artifact-SHA256`. `inline=true` is honoured only for `text/*` and
+        JSON; everything else is an attachment. Downloads are audited.
+      operationId: getArtifactContent
+      parameters:
+        - name: inline
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: The content.
+          headers:
+            X-Artifact-SHA256:
+              schema: { type: string }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/interactions:
+    get:
+      tags: [interactions]
+      summary: Open interactions (inbox)
+      operationId: listInteractions
+      parameters:
+        - name: status
+          in: query
+          description: Only `OPEN` is supported; use `/jobs/{id}/interactions` for history.
+          schema: { type: string, enum: [OPEN] }
+        - name: mine
+          in: query
+          description: Only interactions the caller can answer.
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: Open interactions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InteractionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /api/v1/interactions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [interactions]
+      summary: Get an interaction
+      operationId: getInteraction
+      responses:
+        "200":
+          description: The interaction.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Interaction" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/interactions/{id}/responses:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [interactions]
+      summary: Answer an interaction
+      description: |
+        The response is validated against the interaction's kind, options, and
+        schema; authorized (requested user, requested role, the initiator when
+        no target is set, or `interaction:respond:any`; production approvals
+        also need `approve:production`); stored idempotently; audited; and
+        only then is the job resumed. For approval kinds use
+        `decision: APPROVE|REJECT` or the `/approve` and `/reject` shortcuts.
+      operationId: respondToInteraction
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InteractionResponseRequest" }
+            examples:
+              choice:
+                value: { values: [standard], comment: Balanced detail please }
+              text:
+                value: { text: Use PostgreSQL 17 }
+      responses:
+        "200":
+          description: Recorded (or replayed with the same key).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Interaction" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/Expired" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /api/v1/interactions/{id}/approve:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [interactions]
+      summary: Approve (shortcut for decision APPROVE)
+      operationId: approveInteraction
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Interaction" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/Expired" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /api/v1/interactions/{id}/reject:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [interactions]
+      summary: Reject (shortcut for decision REJECT)
+      operationId: rejectInteraction
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionRequest" }
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Interaction" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/Expired" }
+        "422": { $ref: "#/components/responses/Invalid" }
+
+  /api/v1/audit:
+    get:
+      tags: [audit]
+      summary: Audit log (newest first)
+      description: Requires `audit:read`.
+      operationId: listAudit
+      parameters:
+        - name: before
+          in: query
+          description: Return events with an ID lower than this.
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: Audit events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: OIDC access token (production) or a development token.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 8–128 characters of `[A-Za-z0-9._:-]`, unique per user action.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._:-]{8,128}$"
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Authenticated but not permitted.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found (also returned for other tenants' resources).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: State conflict, illegal transition, duplicate, or idempotency-key reuse with a different body.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Invalid:
+      description: Validation failed; `field` names the offending field.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Expired:
+      description: The interaction has expired.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Submission rate or queue limit reached.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: A dependency is temporarily unavailable; retry later.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [invalid, invalid_transition, not_found, forbidden, unauthorized, conflict, expired, rate_limited, unavailable, internal]
+            message: { type: string }
+            field: { type: string, description: Present for validation errors. }
+    Status:
+      type: object
+      properties:
+        status: { type: string }
+
+    # ---- enums -------------------------------------------------------------
+    Phase:
+      type: string
+      enum: [PLAN, DESIGN, IMPLEMENT, TEST, DEPLOY, MAINTAIN]
+    JobState:
+      type: string
+      enum: [SUBMITTED, VALIDATING, QUEUED, PROVISIONING, PREPARING_WORKSPACE, RUNNING,
+             WAITING_FOR_INPUT, WAITING_FOR_APPROVAL, COLLECTING_ARTIFACTS, CLEANING_UP,
+             SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, NEEDS_INTERVENTION]
+    FailureClass:
+      type: string
+      enum: [VALIDATION, AUTHORIZATION, POLICY, QUOTA, PROVISIONING, WORKSPACE_PREPARATION,
+             AGENT_ERROR, OUTPUT_VALIDATION, ENVIRONMENT_LOST, HITL_TIMEOUT, INTERACTION_REJECTED,
+             TIMEOUT, CANCELLED, INTERNAL]
+    Role:
+      type: string
+      enum: [business_analyst, architect, developer, qa_engineer, release_engineer, platform_admin, viewer]
+    Permission:
+      type: string
+      enum: ["workspace:read", "workspace:write", "job:read", "job:cancel:any", "artifact:read",
+             "execute:plan", "execute:design", "execute:implement", "execute:test", "execute:deploy", "execute:maintain",
+             "deploy:non_production", "deploy:production", "approve:production",
+             "repository:push", "repository:change_request", "integration:jira:write",
+             "interaction:respond:any", "agent:configure", "registry:manage",
+             "provider:manage", "provider:select", "tenant:admin", "audit:read"]
+    DataClassification:
+      type: string
+      description: Ordered PUBLIC < INTERNAL < CONFIDENTIAL < RESTRICTED.
+      enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED]
+    InteractionMode:
+      type: string
+      enum: [CHECKPOINT_RESUME, LIVE_SESSION]
+    InteractionKind:
+      type: string
+      enum: [CLARIFICATION, MULTIPLE_CHOICE, FREE_TEXT, MISSING_INPUT, APPROVAL, PERMISSION,
+             TOOL_AUTHORIZATION, ARTIFACT_REVIEW, CONFLICT_RESOLUTION]
+    InteractionStatus:
+      type: string
+      enum: [RECORDED, OPEN, RESOLVED, EXPIRED, CANCELLED]
+    Decision:
+      type: string
+      enum: [ANSWER, APPROVE, REJECT]
+    ExecutionStatus:
+      type: string
+      enum: [PROVISIONING, PREPARING_WORKSPACE, RUNNING, AWAITING_INPUT, SUSPENDED, COMPLETED, FAILED, TERMINATED, LOST]
+
+    # ---- session -----------------------------------------------------------
+    Me:
+      type: object
+      required: [user, permissions]
+      properties:
+        user:
+          type: object
+          properties:
+            userId: { type: string }
+            tenantId: { type: string }
+            subject: { type: string }
+            email: { type: string }
+            name: { type: string }
+            roles: { type: array, items: { $ref: "#/components/schemas/Role" } }
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+    Dashboard:
+      type: object
+      properties:
+        active: { type: integer }
+        awaitingInput: { type: integer }
+        succeeded24h: { type: integer }
+        failed24h: { type: integer }
+        avgDurationSeconds: { type: number }
+        byState:
+          type: object
+          additionalProperties: { type: integer }
+        cleanupFailures: { type: integer }
+
+    # ---- workspaces --------------------------------------------------------
+    WorkspaceRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 120 }
+        description: { type: string }
+        type:
+          type: string
+          enum: [SINGLE_REPOSITORY, MULTI_REPOSITORY, MANAGED, EPHEMERAL, CUSTOM]
+          default: MULTI_REPOSITORY
+        lifecycleMode:
+          type: string
+          enum: [EPHEMERAL_CHECKOUT, PERSISTENT]
+          default: EPHEMERAL_CHECKOUT
+        dataClassification:
+          allOf: [{ $ref: "#/components/schemas/DataClassification" }]
+          default: INTERNAL
+        defaultAgentProfileId: { type: string }
+        defaultFrameworkId: { type: string }
+        defaultProvider: { type: string, description: "`AUTO` or a pool name." }
+        permittedAgentProfiles: { type: [array, "null"], items: { type: string } }
+        permittedProviders: { type: [array, "null"], items: { type: string } }
+    WorkspacePatch:
+      description: Any subset of `WorkspaceRequest` fields.
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string }
+        type: { type: string, enum: [SINGLE_REPOSITORY, MULTI_REPOSITORY, MANAGED, EPHEMERAL, CUSTOM] }
+        lifecycleMode: { type: string, enum: [EPHEMERAL_CHECKOUT, PERSISTENT] }
+        dataClassification: { $ref: "#/components/schemas/DataClassification" }
+        defaultAgentProfileId: { type: string }
+        defaultFrameworkId: { type: string }
+        defaultProvider: { type: string }
+        permittedAgentProfiles: { type: [array, "null"], items: { type: string } }
+        permittedProviders: { type: [array, "null"], items: { type: string } }
+    Workspace:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        type: { type: string }
+        lifecycleMode: { type: string }
+        dataClassification: { $ref: "#/components/schemas/DataClassification" }
+        defaultAgentProfileId: { type: string }
+        defaultFrameworkId: { type: string }
+        defaultProvider: { type: string }
+        permittedAgentProfiles: { type: array, items: { type: string } }
+        permittedProviders: { type: array, items: { type: string } }
+        repositories: { type: array, items: { $ref: "#/components/schemas/Repository" } }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    WorkspaceList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Workspace" } }
+    RepositoryRequest:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        provider: { type: string, enum: [GITHUB, GITLAB, GIT], description: Inferred from the URL when omitted. }
+        url: { type: string, format: uri, examples: ["https://github.com/acme/payments.git"] }
+        namespace: { type: string }
+        defaultBranch: { type: string, default: main }
+        credentialRef: { type: string, description: Secret-manager reference; never the secret itself. }
+        checkoutPolicy: { type: string }
+        permittedOperations: { type: array, items: { type: string, enum: [read, write] } }
+        pinnedRevision: { type: string }
+    Repository:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        workspaceId: { type: string }
+        provider: { type: string, enum: [GITHUB, GITLAB, GIT] }
+        url: { type: string }
+        namespace: { type: string }
+        defaultBranch: { type: string }
+        credentialRef: { type: string }
+        checkoutPolicy: { type: string }
+        permittedOperations: { type: array, items: { type: string } }
+        pinnedRevision: { type: string }
+        lastValidatedAt: { type: string, format: date-time }
+        validationError: { type: string }
+        createdAt: { type: string, format: date-time }
+    RepositoryList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Repository" } }
+
+    # ---- registry ----------------------------------------------------------
+    AgentCapabilities:
+      type: object
+      properties:
+        interactionModes: { type: array, items: { $ref: "#/components/schemas/InteractionMode" } }
+        structuredEvents: { type: boolean }
+        toolPermissionControl: { type: boolean }
+        nonInteractive: { type: boolean }
+        gracefulCancellation: { type: boolean }
+        supportedAuthMethods: { type: array, items: { type: string } }
+    AgentProfile:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string, readOnly: true }
+        name: { type: string }
+        version: { type: integer, readOnly: true }
+        provider: { type: string, description: Adapter name, for example `mock`. }
+        cliName: { type: string }
+        cliVersion: { type: string }
+        runtimeImage: { type: string }
+        authMethod: { type: string }
+        interactionMode:
+          description: Empty means the adapter's preferred mode.
+          oneOf:
+            - { $ref: "#/components/schemas/InteractionMode" }
+            - { type: string, enum: [""] }
+        environment: { type: object, additionalProperties: { type: string } }
+        defaultArgs: { type: array, items: { type: string } }
+        resources: { $ref: "#/components/schemas/Resources" }
+        executionPolicy: { type: object }
+        enabled: { type: boolean }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        capabilities:
+          allOf: [{ $ref: "#/components/schemas/AgentCapabilities" }]
+          readOnly: true
+    Resources:
+      type: object
+      properties:
+        cpuRequest: { type: string }
+        cpuLimit: { type: string }
+        memoryRequest: { type: string }
+        memoryLimit: { type: string }
+        ephemeralStorage: { type: string }
+    AgentProfileList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/AgentProfile" } }
+    FrameworkProfile:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        name: { type: string }
+        version: { type: string }
+        source: { type: string }
+        revision: { type: string }
+        discoveryStrategy: { type: string }
+        compatibleAgents: { type: array, items: { type: string } }
+        requiredTools: { type: array, items: { type: string } }
+        config: { type: object }
+        createdAt: { type: string, format: date-time }
+    FrameworkList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/FrameworkProfile" } }
+    InputField:
+      type: object
+      properties:
+        name: { type: string }
+        label: { type: string }
+        type: { type: string, description: "Field type, e.g. string, text, enum, boolean, artifact." }
+        required: { type: boolean }
+        description: { type: string }
+        enum: { type: array, items: { type: string } }
+        maxLength: { type: integer }
+        default: {}
+    Command:
+      type: object
+      properties:
+        id: { type: string }
+        frameworkId: { type: string }
+        version: { type: integer }
+        displayName: { type: string }
+        canonical: { type: string, description: Exact, case-sensitive name such as `/Plan-migrate`. }
+        description: { type: string }
+        phase: { $ref: "#/components/schemas/Phase" }
+        personas: { type: array, items: { $ref: "#/components/schemas/Role" } }
+        compatibleAgents: { type: array, items: { type: string } }
+        inputs: { type: array, items: { $ref: "#/components/schemas/InputField" } }
+        repositoryAccess: { type: string, enum: [NONE, READ, WRITE] }
+        requiredPermissions: { type: array, items: { $ref: "#/components/schemas/Permission" } }
+        expectedArtifacts:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              required: { type: boolean }
+        sideEffects: { type: array, items: { type: string } }
+        timeoutSeconds: { type: integer }
+        resources:
+          description: Overrides the agent profile's resources for this command.
+          allOf: [{ $ref: "#/components/schemas/Resources" }]
+        approval:
+          type: object
+          properties:
+            beforeExecution: { type: boolean }
+            approverRole: { $ref: "#/components/schemas/Role" }
+            productionApproval: { type: boolean }
+        retry:
+          type: object
+          properties:
+            maxAttempts: { type: integer }
+            retryOn: { type: array, items: { $ref: "#/components/schemas/FailureClass" } }
+        hitl:
+          type: object
+          properties:
+            maxWaitSeconds: { type: integer }
+            onTimeout: { type: string, enum: [FAIL, NEEDS_INTERVENTION, PAUSE] }
+        outputValidation:
+          type: array
+          items:
+            type: object
+            properties:
+              artifactType: { type: string }
+              maxBytes: { type: integer }
+              contentTypes: { type: array, items: { type: string } }
+        source: {}
+        status: { type: string }
+    CommandList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Command" } }
+    Pool:
+      type: object
+      properties:
+        name: { type: string }
+        type: { type: string, enum: [kubernetes, local] }
+        network: { type: string, enum: [PRIVATE, PUBLIC] }
+        region: { type: string }
+        maxClassification: { $ref: "#/components/schemas/DataClassification" }
+        enabled: { type: boolean }
+    PoolList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Pool" } }
+        canSelect: { type: boolean, description: Whether the caller may request a specific pool. }
+    Integration:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        category: { type: string }
+        status: { type: string, enum: [available, not_configured] }
+        notes: { type: string }
+    IntegrationList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Integration" } }
+
+    # ---- jobs --------------------------------------------------------------
+    SubmitJobRequest:
+      type: object
+      required: [workspaceId, command]
+      additionalProperties: false
+      properties:
+        workspaceId: { type: string }
+        frameworkId: { type: string, description: Defaults to the workspace's framework. }
+        command: { type: string, description: Canonical command name, exact casing. }
+        agentProfileId: { type: string, description: Defaults to the workspace's agent profile. }
+        provider: { type: string, description: "`AUTO` (policy-based) or a pool name (needs `provider:select`)." }
+        inputs:
+          type: object
+          description: Must match the command's `inputs`; unknown keys are rejected.
+          additionalProperties: true
+        repositories:
+          type: array
+          description: Defaults to all workspace repositories when the command needs repository access.
+          items:
+            type: object
+            required: [repositoryId]
+            additionalProperties: false
+            properties:
+              repositoryId: { type: string }
+              revision: { type: string, description: Branch, tag, or commit; defaults to the repository's default branch. }
+        parentJobId: { type: string }
+        links:
+          type: object
+          additionalProperties: { type: string }
+    JobRepository:
+      type: object
+      properties:
+        repositoryId: { type: string }
+        url: { type: string }
+        requestedRevision: { type: string }
+        resolvedCommit: { type: string }
+        checkoutPath: { type: string }
+        workingBranch: { type: string }
+        finalCommit: { type: string }
+        changeRequestUrl: { type: string }
+    Job:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        workspaceId: { type: string }
+        initiatedBy: { type: string }
+        phase: { $ref: "#/components/schemas/Phase" }
+        command: { type: string }
+        commandId: { type: string }
+        agentProfileId: { type: string }
+        agentProfileVersion: { type: integer }
+        frameworkId: { type: string }
+        frameworkRevision: { type: string }
+        requestedProvider: { type: string }
+        selectedProvider: { type: string }
+        inputs: { type: object }
+        repositories: { type: array, items: { $ref: "#/components/schemas/JobRepository" } }
+        workflowId: { type: string }
+        state: { $ref: "#/components/schemas/JobState" }
+        currentStep: { type: string }
+        pendingOutcome: { type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT] }
+        failureClass: { $ref: "#/components/schemas/FailureClass" }
+        failureMessage: { type: string }
+        cleanupStatus: { type: string }
+        attempt: { type: integer }
+        retryOf: { type: string }
+        parentJobId: { type: string }
+        links: { type: object, additionalProperties: { type: string } }
+        cancelRequestedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+    JobDetail:
+      type: object
+      required: [job, allowedTransitions, actions]
+      properties:
+        job: { $ref: "#/components/schemas/Job" }
+        allowedTransitions:
+          type: array
+          items: { $ref: "#/components/schemas/JobState" }
+        actions:
+          type: object
+          description: UI hints; the server re-checks every action.
+          properties:
+            cancel: { type: boolean }
+            retry: { type: boolean }
+            operator: { type: boolean }
+    JobPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Job" } }
+        nextBefore: { type: string, format: date-time, description: Present when more results may exist. }
+    OperatorActionRequest:
+      type: object
+      required: [action]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [retry, reopen, cancel] }
+        reason: { type: string }
+    JobEvent:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        tenantId: { type: string }
+        jobId: { type: string }
+        type: { type: string }
+        payload: { type: object }
+        createdAt: { type: string, format: date-time }
+    LogLine:
+      type: object
+      properties:
+        eventId: { type: integer, format: int64 }
+        executionId: { type: string }
+        attempt: { type: integer }
+        ts: { type: string, format: date-time }
+        stream: { type: string, enum: [stdout, stderr, supervisor] }
+        level: { type: string }
+        message: { type: string }
+    LogPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/LogLine" } }
+        next: { type: integer, format: int64, description: Cursor for `after`. }
+    Execution:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        jobId: { type: string }
+        attempt: { type: integer }
+        provider: { type: string }
+        providerRef: { type: string }
+        status: { $ref: "#/components/schemas/ExecutionStatus" }
+        interactionMode: { $ref: "#/components/schemas/InteractionMode" }
+        exitCode: { type: integer }
+        resultStatus: { type: string }
+        summary: { type: string }
+        errorMessage: { type: string }
+        failureClass: { $ref: "#/components/schemas/FailureClass" }
+        pendingInteractionId: { type: string }
+        checkpointArtifactId: { type: string }
+        resumeInteractionId: { type: string }
+        cleanupStatus: { type: string }
+        cleanupError: { type: string }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+    ExecutionList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Execution" } }
+
+    # ---- artifacts ---------------------------------------------------------
+    Artifact:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        jobId: { type: string }
+        executionId: { type: string }
+        type: { type: string, examples: [specification, task-list, changes.diff] }
+        name: { type: string }
+        contentType: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+        sha256: { type: string }
+        classification: { type: string, enum: [USER, INTERNAL] }
+        sourceStep: { type: string }
+        repositoryId: { type: string }
+        revision: { type: string }
+        retainUntil: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+    ArtifactList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Artifact" } }
+
+    # ---- interactions ------------------------------------------------------
+    InteractionOption:
+      type: object
+      required: [value, label]
+      properties:
+        value: { type: string }
+        label: { type: string }
+        description: { type: string }
+    InteractionResponse:
+      type: object
+      properties:
+        id: { type: string }
+        interactionId: { type: string }
+        decision: { $ref: "#/components/schemas/Decision" }
+        values: { type: array, items: { type: string } }
+        text: { type: string }
+        comment: { type: string }
+        respondedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+    Interaction:
+      type: object
+      properties:
+        id: { type: string }
+        tenantId: { type: string }
+        jobId: { type: string }
+        executionId: { type: string, description: Empty for platform approval gates. }
+        stepId: { type: string }
+        agentRequestId: { type: string }
+        kind: { $ref: "#/components/schemas/InteractionKind" }
+        prompt: { type: string }
+        options: { type: array, items: { $ref: "#/components/schemas/InteractionOption" } }
+        schema:
+          type: object
+          properties:
+            required: { type: boolean }
+            maxLength: { type: integer }
+            minLength: { type: integer }
+            multiple: { type: boolean }
+        requestedUser: { type: string }
+        requestedRole: { $ref: "#/components/schemas/Role" }
+        status: { $ref: "#/components/schemas/InteractionStatus" }
+        createdAt: { type: string, format: date-time }
+        openedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time }
+        response: { $ref: "#/components/schemas/InteractionResponse" }
+        jobCommand: { type: string }
+        jobState: { $ref: "#/components/schemas/JobState" }
+        canRespond: { type: boolean, description: UI hint; the server re-checks. }
+        platform: { type: boolean, description: Raised by the platform (approval gate), not the agent. }
+        productionApproval: { type: boolean, description: Answering requires `approve:production`. }
+    InteractionList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Interaction" } }
+    InteractionResponseRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        decision: { $ref: "#/components/schemas/Decision" }
+        values:
+          type: array
+          description: Selected option values (choice kinds).
+          items: { type: string }
+        text: { type: string, description: Free-text answer. }
+        comment: { type: string, maxLength: 5000 }
+    DecisionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        comment: { type: string, maxLength: 5000 }
+
+    # ---- audit -------------------------------------------------------------
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        tenantId: { type: string }
+        actor: { type: string }
+        actorType: { type: string, enum: [user, system, execution] }
+        action: { type: string, examples: [job.submit, job.cancel, interaction.respond, artifact.download] }
+        targetType: { type: string }
+        targetId: { type: string }
+        details: { type: object }
+        createdAt: { type: string, format: date-time }
+    AuditList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/AuditEvent" } }

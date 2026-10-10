@@ -1,0 +1,405 @@
+openapi: 3.1.0
+info:
+  title: Astrion Internal Execution API
+  version: 1.0.0
+  summary: Contract between the in-environment supervisor and the control plane.
+  description: |
+    Used **only** by `astrion-supervisor` running inside an execution
+    environment (see ADR-0008). It is not a public API and should be reachable
+    only from execution networks.
+
+    **Authentication.** Every call carries `Authorization: Bearer <token>`.
+    The token is minted per execution attempt, delivered to the supervisor as
+    `ASTRION_EXECUTION_TOKEN` (never to the agent), stored server-side only
+    as a SHA-256 hash, and bound to one execution, job, and tenant.
+
+    **Lifecycle.**
+    - Calls get `401` once the token expires or is revoked; revocation happens
+      at cleanup.
+    - Mutating calls get `410` once the execution has finished, the job is
+      terminal, or cancellation was requested. The supervisor must then stop
+      the agent and exit.
+
+    **Authority.** The supervisor reports facts. The job workflow alone
+    decides state transitions.
+
+    Go types: `internal/execapi`, `internal/agent`.
+  license:
+    name: Proprietary
+servers:
+  - url: http://astrion-api.astrion.svc:8080
+security:
+  - executionToken: []
+
+paths:
+  /internal/v1/executions/{executionId}/spec:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    get:
+      summary: Fetch the execution spec
+      description: |
+        Everything needed to run this attempt. The spec contains no secret
+        values: credentials arrive as files in the secrets directory, and
+        `secretFiles` names the ones whose contents must be redacted. For
+        resumed attempts, `resume` holds the validated human response.
+      operationId: getSpec
+      responses:
+        "200":
+          description: The spec.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Spec" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/Gone" }
+  /internal/v1/executions/{executionId}/status:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    post:
+      summary: Report execution progress
+      operationId: reportStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StatusReport" }
+      responses:
+        "204": { description: Recorded. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /internal/v1/executions/{executionId}/logs:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    post:
+      summary: Append a batch of redacted log lines
+      description: "`seq` is a supervisor-local sequence used to drop duplicate retries."
+      operationId: appendLogs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogBatch" }
+      responses:
+        "204": { description: Recorded. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /internal/v1/executions/{executionId}/repositories:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    post:
+      summary: Report repository checkout and final state
+      operationId: reportRepository
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RepositoryReport" }
+      responses:
+        "204": { description: Recorded. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /internal/v1/executions/{executionId}/interactions:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    post:
+      summary: Raise a question or approval request from the agent
+      description: |
+        The interaction is persisted (state `RECORDED`) before anything else
+        happens. It is opened and users are notified only after the workflow
+        has durably entered the waiting state. Idempotent on the agent's
+        request `id`.
+      operationId: createInteraction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InteractionRequest" }
+      responses:
+        "201":
+          description: Recorded (or the existing one for a repeated `id`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InteractionCreated" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /internal/v1/executions/{executionId}/interactions/{iid}:
+    parameters:
+      - $ref: "#/components/parameters/ExecutionId"
+      - name: iid
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Poll an interaction (live-session mode)
+      operationId: getInteraction
+      responses:
+        "200":
+          description: Current state, with the response once resolved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InteractionState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+  /internal/v1/executions/{executionId}/artifacts:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    put:
+      summary: Upload an artifact (raw bytes)
+      description: |
+        Streams the body to object storage while hashing it. The upload is
+        rejected if it exceeds `maxArtifactBytes` or differs from `size`.
+        `uploadId` makes retries idempotent: a repeated `uploadId` returns the
+        existing artifact with `200`.
+      operationId: uploadArtifact
+      parameters:
+        - { name: uploadId, in: query, required: true, schema: { type: string } }
+        - { name: type, in: query, required: true, schema: { type: string } }
+        - { name: name, in: query, required: true, schema: { type: string } }
+        - { name: size, in: query, required: true, schema: { type: integer, format: int64 } }
+        - { name: classification, in: query, schema: { type: string, enum: [USER, INTERNAL], default: USER } }
+        - { name: step, in: query, schema: { type: string } }
+        - { name: repositoryId, in: query, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: Already uploaded (idempotent replay).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactCreated" }
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactCreated" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "422": { $ref: "#/components/responses/Invalid" }
+  /internal/v1/executions/{executionId}/checkpoint:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    get:
+      summary: Download the checkpoint to resume from
+      description: Available when the spec has `hasCheckpoint=true` (checkpoint/resume mode).
+      operationId: getCheckpoint
+      responses:
+        "200":
+          description: Checkpoint archive.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+  /internal/v1/executions/{executionId}/complete:
+    parameters: [{ $ref: "#/components/parameters/ExecutionId" }]
+    post:
+      summary: Final report for this attempt
+      description: |
+        - `COMPLETED`: the agent finished.
+        - `SUSPENDED`: a checkpoint was saved and the agent is waiting on
+          `pendingInteractionId`. The environment is then released.
+        - `FAILED`: carries `failureClass` and `error`.
+
+        Idempotent.
+      operationId: complete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Completion" }
+      responses:
+        "204": { description: Recorded. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { $ref: "#/components/responses/Gone" }
+        "422": { $ref: "#/components/responses/Invalid" }
+
+components:
+  securitySchemes:
+    executionToken:
+      type: http
+      scheme: bearer
+      description: Per-execution token (`ASTRION_EXECUTION_TOKEN`).
+  parameters:
+    ExecutionId:
+      name: executionId
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Unauthorized:
+      description: Token missing, invalid, expired, revoked, or for another execution.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Gone:
+      description: The execution is no longer active. Stop work.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: For example, the resume interaction is not resolved yet.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found within this execution.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Invalid:
+      description: Validation failed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            field: { type: string }
+    InteractionMode:
+      type: string
+      enum: [CHECKPOINT_RESUME, LIVE_SESSION]
+    RepoSpec:
+      type: object
+      properties:
+        repositoryId: { type: string }
+        provider: { type: string }
+        url: { type: string }
+        revision: { type: string }
+        checkoutPath: { type: string, description: Relative to the workspace repositories directory. }
+        workingBranch: { type: string, description: Created when the command may modify repositories. }
+        credentialFile: { type: string, description: File in the secrets directory with a short-lived token. }
+    InteractionResponse:
+      type: object
+      properties:
+        id: { type: string }
+        interactionId: { type: string }
+        decision: { type: string, enum: [ANSWER, APPROVE, REJECT] }
+        values: { type: array, items: { type: string } }
+        text: { type: string }
+        comment: { type: string }
+        respondedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+    ResumeRequest:
+      type: object
+      properties:
+        interactionId: { type: string }
+        agentRequestId: { type: string }
+        response: { $ref: "#/components/schemas/InteractionResponse" }
+    Spec:
+      type: object
+      properties:
+        executionId: { type: string }
+        jobId: { type: string }
+        tenantId: { type: string }
+        attempt: { type: integer }
+        command: { type: string }
+        inputs: { type: object }
+        expectedArtifacts: { type: array, items: { type: string } }
+        profile:
+          type: object
+          description: The agent profile version pinned at submission (see the public API's `AgentProfile`).
+        mode: { $ref: "#/components/schemas/InteractionMode" }
+        repositories: { type: array, items: { $ref: "#/components/schemas/RepoSpec" } }
+        resume: { $ref: "#/components/schemas/ResumeRequest" }
+        hasCheckpoint: { type: boolean }
+        maxArtifactBytes: { type: integer, format: int64 }
+        timeoutSeconds: { type: integer }
+        secretFiles: { type: array, items: { type: string } }
+    StatusReport:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [PROVISIONING, PREPARING_WORKSPACE, RUNNING, AWAITING_INPUT, SUSPENDED, COMPLETED, FAILED, TERMINATED, LOST]
+        step: { type: string }
+        message: { type: string }
+    LogLine:
+      type: object
+      required: [ts, stream, message]
+      properties:
+        ts: { type: string, format: date-time }
+        stream: { type: string, enum: [stdout, stderr, supervisor] }
+        level: { type: string }
+        message: { type: string }
+    LogBatch:
+      type: object
+      required: [seq, lines]
+      properties:
+        seq: { type: integer, format: int64 }
+        lines: { type: array, items: { $ref: "#/components/schemas/LogLine" } }
+    RepositoryReport:
+      type: object
+      required: [repositoryId]
+      properties:
+        repositoryId: { type: string }
+        resolvedCommit: { type: string }
+        checkoutPath: { type: string }
+        workingBranch: { type: string }
+        finalCommit: { type: string }
+    InteractionOption:
+      type: object
+      properties:
+        value: { type: string }
+        label: { type: string }
+        description: { type: string }
+    InteractionRequest:
+      type: object
+      required: [id, kind, prompt]
+      properties:
+        id: { type: string, description: Agent-side request ID (idempotency). }
+        kind:
+          type: string
+          enum: [CLARIFICATION, MULTIPLE_CHOICE, FREE_TEXT, MISSING_INPUT, APPROVAL, PERMISSION,
+                 TOOL_AUTHORIZATION, ARTIFACT_REVIEW, CONFLICT_RESOLUTION]
+        prompt: { type: string }
+        options: { type: array, items: { $ref: "#/components/schemas/InteractionOption" } }
+        schema:
+          type: object
+          properties:
+            required: { type: boolean }
+            maxLength: { type: integer }
+            minLength: { type: integer }
+            multiple: { type: boolean }
+        requestedRole: { type: string }
+        step: { type: string }
+    InteractionCreated:
+      type: object
+      properties:
+        interactionId: { type: string }
+    InteractionState:
+      type: object
+      properties:
+        interactionId: { type: string }
+        status: { type: string, enum: [RECORDED, OPEN, RESOLVED, EXPIRED, CANCELLED] }
+        response: { $ref: "#/components/schemas/InteractionResponse" }
+    ArtifactCreated:
+      type: object
+      properties:
+        artifactId: { type: string }
+        sha256: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+    Completion:
+      type: object
+      required: [disposition, exitCode]
+      properties:
+        disposition: { type: string, enum: [COMPLETED, SUSPENDED, FAILED] }
+        exitCode: { type: integer }
+        resultStatus: { type: string }
+        summary: { type: string }
+        error: { type: string }
+        failureClass: { type: string }
+        pendingInteractionId: { type: string }
+        checkpointArtifactId: { type: string }
+        artifacts: { type: array, items: { type: string }, description: Artifact types produced. }
