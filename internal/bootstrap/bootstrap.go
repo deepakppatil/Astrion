@@ -93,8 +93,20 @@ func Run(ctx context.Context, s *store.Store, o Options) (*Result, error) {
 			return nil, err
 		}
 		res.WorkspaceID = w.ID
-		if o.DemoRepoURL != "" {
-			r := &domain.Repository{TenantID: o.TenantID, WorkspaceID: w.ID, Provider: domain.RepoGeneric, URL: o.DemoRepoURL,
+	}
+	// Attach the demo repository whenever it is configured and missing, so
+	// setting ASTRION_DEMO_REPO_URL after the first start still takes effect.
+	if o.DemoRepoURL != "" {
+		repos, err := s.ListRepositories(ctx, o.TenantID, res.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		present := false
+		for _, r := range repos {
+			present = present || r.URL == o.DemoRepoURL
+		}
+		if !present {
+			r := &domain.Repository{TenantID: o.TenantID, WorkspaceID: res.WorkspaceID, Provider: domain.RepoGeneric, URL: o.DemoRepoURL,
 				DefaultBranch: "main", CheckoutPolicy: "SHALLOW", PermittedOperations: []string{"read", "write"}}
 			if err := s.AddRepository(ctx, "system:bootstrap", r); err != nil && !errors.Is(err, domain.ErrConflict) {
 				return nil, err

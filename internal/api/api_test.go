@@ -247,6 +247,21 @@ func TestSubmitJobIdempotentAndAuthorized(t *testing.T) {
 	e.submit(tokDev, map[string]any{"workspaceId": e.boot.WorkspaceID, "command": "/implement-task"}, 422)
 	e.submit(tokDev, map[string]any{"workspaceId": e.boot.WorkspaceID, "command": "/implement-task",
 		"inputs": map[string]any{"taskId": "T", "rm": "-rf"}}, 422)
+	// Command names are case-sensitive; a near miss gets a hint, never a match.
+	var cerr struct {
+		Error struct{ Message, Field string }
+	}
+	e.do(tokBA, "POST", "/api/v1/jobs", map[string]any{"workspaceId": e.boot.WorkspaceID, "command": "/plan-migrate",
+		"inputs": map[string]any{}}, &cerr, 422)
+	if cerr.Error.Field != "command" || !strings.Contains(cerr.Error.Message, `did you mean "/Plan-migrate"`) {
+		t.Fatalf("case near-miss: %+v", cerr.Error)
+	}
+	// ...but only for commands the caller can see (QA cannot see Plan commands).
+	e.do(tokQA, "POST", "/api/v1/jobs", map[string]any{"workspaceId": e.boot.WorkspaceID, "command": "/plan-migrate",
+		"inputs": map[string]any{}}, &cerr, 422)
+	if strings.Contains(cerr.Error.Message, "did you mean") {
+		t.Fatalf("hint leaked a command the caller cannot see: %+v", cerr.Error)
+	}
 	// BA can run /write-spec.
 	e.submit(tokBA, map[string]any{"workspaceId": e.boot.WorkspaceID, "command": "/write-spec",
 		"inputs": map[string]any{"specName": "Checkout"}}, 202)
@@ -519,16 +534,16 @@ func TestSSEReplaysFromLastEventID(t *testing.T) {
 	if len(rest) != len(all)-2 || rest[0] != all[2] {
 		t.Fatalf("replay after %s = %v (all %v)", all[1], rest, all)
 	}
-	// Token via query string is accepted only for the events endpoint.
-	resp, _ := http.Get(fmt.Sprintf("%s/api/v1/jobs/%s/events?access_token=%s", e.srv.URL, j.ID, tokDev))
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("query token: %d", resp.StatusCode)
-	}
-	resp, _ = http.Get(fmt.Sprintf("%s/api/v1/jobs/%s?access_token=%s", e.srv.URL, j.ID, tokDev))
-	resp.Body.Close()
-	if resp.StatusCode != 401 {
-		t.Fatalf("query token on non-SSE route: %d", resp.StatusCode)
+	// Tokens in the query string are never accepted, including for SSE.
+	for _, path := range []string{"/events", ""} {
+		resp, err := http.Get(fmt.Sprintf("%s/api/v1/jobs/%s%s?access_token=%s", e.srv.URL, j.ID, path, tokDev))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 401 {
+			t.Fatalf("query token on %q: got %d, want 401", path, resp.StatusCode)
+		}
 	}
 }
 
@@ -538,6 +553,13 @@ func TestWorkspaceAndCommandsVisibility(t *testing.T) {
 	var ws domain.Workspace
 	e.do(tokAdmin, "POST", "/api/v1/workspaces", map[string]any{"name": "Payments", "dataClassification": "CONFIDENTIAL"}, &ws, 201)
 	e.do(tokAdmin, "POST", "/api/v1/workspaces", map[string]any{"name": "Payments"}, nil, 409)
+	// PATCH is a partial update: changing the description keeps everything else.
+	var patched domain.Workspace
+	e.do(tokAdmin, "PATCH", "/api/v1/workspaces/"+ws.ID, map[string]any{"description": "card payments"}, &patched, 200)
+	if patched.Description != "card payments" || patched.Name != "Payments" || patched.DataClassification != domain.ClassConfidential {
+		t.Fatalf("PATCH reset unrelated fields: %+v", patched)
+	}
+	e.do(tokAdmin, "PATCH", "/api/v1/workspaces/"+ws.ID, map[string]any{"name": ""}, nil, 422)
 	e.do(tokAdmin, "POST", "/api/v1/workspaces/"+ws.ID+"/repositories", map[string]any{"url": "https://user:pw@github.com/a/b"}, nil, 422)
 	e.do(tokAdmin, "POST", "/api/v1/workspaces/"+ws.ID+"/repositories", map[string]any{"url": "ssh://github.com/a/b"}, nil, 422)
 

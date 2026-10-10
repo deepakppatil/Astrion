@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -243,6 +244,12 @@ func (s *Server) artifactContent(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, rc)
 }
 
+// spaCSP restricts the web console to same-origin scripts, styles and API
+// calls. The Vite build emits no inline scripts, so 'unsafe-inline' is not
+// needed; agent output is rendered as text, never as HTML.
+const spaCSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; " +
+	"connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"
+
 // spaHandler serves the built web UI with index.html fallback for client
 // routes. API paths never fall through to the SPA.
 func spaHandler(dir string) http.HandlerFunc {
@@ -252,8 +259,14 @@ func spaHandler(dir string) http.HandlerFunc {
 			writeError(w, domain.Errorf(domain.ErrNotFound, "route"))
 			return
 		}
-		clean := filepath.Clean("/" + r.URL.Path)
-		if st, err := os.Stat(filepath.Join(dir, clean)); err == nil && !st.IsDir() {
+		// Clean as a URL path (forward slashes on every OS). Backslashes are
+		// path separators on Windows, so a request containing one could step
+		// outside dir after FromSlash; such requests get the SPA shell.
+		clean := path.Clean("/" + r.URL.Path)
+		if strings.ContainsRune(clean, '\\') {
+			clean = "/index.html"
+		}
+		if st, err := os.Stat(filepath.Join(dir, filepath.FromSlash(clean))); err == nil && !st.IsDir() {
 			if strings.HasPrefix(clean, "/assets/") {
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			}
@@ -261,6 +274,7 @@ func spaHandler(dir string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Security-Policy", spaCSP)
 		http.ServeFile(w, r, filepath.Join(dir, "index.html"))
 	}
 }

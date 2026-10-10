@@ -95,7 +95,7 @@ func (s *Server) acceptJob(ctx context.Context, p *authz.Principal, q submitJobR
 	}
 	cmd, err := s.Store.FindCommand(ctx, fw.ID, q.Command)
 	if err != nil {
-		return nil, false, domain.Invalid("command", "unknown command %q for framework %s", q.Command, fw.Name)
+		return nil, false, s.unknownCommand(ctx, p, fw, q.Command)
 	}
 	if cmd.Status != registry.StatusApproved {
 		return nil, false, domain.Invalid("command", "command %s is %s", cmd.Canonical, cmd.Status)
@@ -515,3 +515,18 @@ func strictJSON(b []byte, v any) error {
 }
 
 var errTooLarge = errors.New("request body too large")
+
+// unknownCommand explains a failed command lookup. Canonical names are
+// case-sensitive and are never case-folded, but a near miss such as
+// "/plan-migrate" gets a hint. Hints only name commands the caller may already
+// see, so they cannot reveal hidden or unapproved commands.
+func (s *Server) unknownCommand(ctx context.Context, p *authz.Principal, fw *domain.FrameworkProfile, name string) error {
+	if cmds, err := s.Store.ListCommands(ctx, fw.ID); err == nil {
+		for _, c := range registry.Visible(cmds, registry.Filter{FrameworkID: fw.ID, Principal: p}) {
+			if strings.EqualFold(c.Canonical, name) {
+				return domain.Invalid("command", "unknown command %q: command names are case-sensitive; did you mean %q?", name, c.Canonical)
+			}
+		}
+	}
+	return domain.Invalid("command", "unknown command %q for framework %s", name, fw.Name)
+}

@@ -225,13 +225,9 @@ func securityHeaders(next http.Handler) http.Handler {
 // an authoritative IdP (group mapping) are synchronized on each request.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// EventSource cannot set headers; allow the token as a query
-		// parameter for SSE endpoints only.
-		if r.Header.Get("Authorization") == "" && strings.HasSuffix(r.URL.Path, "/events") {
-			if tok := r.URL.Query().Get("access_token"); tok != "" {
-				r.Header.Set("Authorization", "Bearer "+tok)
-			}
-		}
+		// Tokens are accepted only in the Authorization header, never in the
+		// URL (where they would leak into proxy logs, history and Referer).
+		// The web console consumes SSE with fetch() so it can set headers.
 		id, err := s.Auth.Authenticate(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="astrion"`)

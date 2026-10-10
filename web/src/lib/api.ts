@@ -180,6 +180,47 @@ export async function fetchArtifact(id: string, inline: boolean): Promise<Respon
  * in a header, never in a URL). On disconnect it reconnects with
  * Last-Event-ID; the server replays durable events, so nothing is missed.
  */
+export type SSEFrame = { id?: string; event: string; data: string };
+
+/**
+ * Parses complete Server-Sent Events frames from `buf` (per the WHATWG spec:
+ * LF or CRLF line endings, optional single space after the colon, multi-line
+ * data joined with "\n", comment lines ignored). Returns the frames and the
+ * unconsumed remainder, which the caller prepends to the next chunk.
+ */
+export function parseSSE(buf: string): { frames: SSEFrame[]; rest: string } {
+  const text = buf.replace(/\r\n?/g, "\n");
+  const frames: SSEFrame[] = [];
+  let start = 0;
+  let idx;
+  while ((idx = text.indexOf("\n\n", start)) >= 0) {
+    const block = text.slice(start, idx);
+    start = idx + 2;
+    const frame: SSEFrame = { event: "message", data: "" };
+    const data: string[] = [];
+    for (const line of block.split("\n")) {
+      if (!line || line.startsWith(":")) continue;
+      const colon = line.indexOf(":");
+      const field = colon < 0 ? line : line.slice(0, colon);
+      let value = colon < 0 ? "" : line.slice(colon + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+      if (field === "event") frame.event = value;
+      else if (field === "data") data.push(value);
+      else if (field === "id") frame.id = value;
+    }
+    frame.data = data.join("\n");
+    if (frame.id !== undefined || data.length || frame.event !== "message") frames.push(frame);
+  }
+  return { frames, rest: text.slice(start) };
+}
+
+/**
+ * Follows a job's live event stream. Uses fetch (not EventSource) so the
+ * bearer token travels in the Authorization header, never in the URL, and
+ * resumes after a disconnect with Last-Event-ID and capped exponential
+ * backoff. Stops on 401/403/404, on the server's `end` event, or when the
+ * returned function is called.
+ */
 export function subscribeJobEvents(jobId: string, onEvent: (e: JobEvent) => void, onEnd: () => void): () => void {
   const ctrl = new AbortController();
   let lastId = 0;
@@ -189,7 +230,7 @@ export function subscribeJobEvents(jobId: string, onEvent: (e: JobEvent) => void
     while (!stopped) {
       try {
         const token = auth.get();
-        const res = await fetch(`/api/v1/jobs/${jobId}/events`, {
+        const res = await fetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/events`, {
           headers: { Accept: "text/event-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}),
             ...(lastId ? { "Last-Event-ID": String(lastId) } : {}) },
           signal: ctrl.signal,
@@ -202,35 +243,28 @@ export function subscribeJobEvents(jobId: string, onEvent: (e: JobEvent) => void
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
-          buf += value;
-          let idx;
-          while ((idx = buf.indexOf("\n\n")) >= 0) {
-            const frame = buf.slice(0, idx);
-            buf = buf.slice(idx + 2);
-            let type = "message", data = "", id = "";
-            for (const line of frame.split("\n")) {
-              if (line.startsWith("event: ")) type = line.slice(7);
-              else if (line.startsWith("data: ")) data += line.slice(6);
-              else if (line.startsWith("id: ")) id = line.slice(4);
-            }
-            if (id) lastId = Number(id);
-            if (type === "end") {
+          const parsed = parseSSE(buf + value);
+          buf = parsed.rest;
+          for (const f of parsed.frames) {
+            if (f.id && /^\d+$/.test(f.id)) lastId = Number(f.id);
+            if (f.event === "end") {
               stopped = true;
               onEnd();
               return;
             }
-            if (data && type !== "message") {
+            if (f.data && f.event !== "message") {
               try {
-                onEvent(JSON.parse(data));
+                onEvent(JSON.parse(f.data));
               } catch {
                 /* ignore malformed frame */
               }
             }
           }
         }
-      } catch (e) {
+      } catch {
         if (ctrl.signal.aborted) return;
       }
+      if (stopped) return;
       await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, 15000);
     }

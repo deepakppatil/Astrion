@@ -140,7 +140,13 @@ func (s *Server) updateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	var q workspaceRequest
+	// PATCH semantics: start from the stored workspace and overlay only the
+	// fields present in the body (encoding/json leaves absent fields as-is),
+	// so updating one field never resets the others.
+	q := workspaceRequest{Name: ws.Name, Description: ws.Description, Type: ws.Type, LifecycleMode: ws.LifecycleMode,
+		DataClassification: ws.DataClassification, DefaultAgentProfileID: ws.DefaultAgentProfileID,
+		DefaultFrameworkID: ws.DefaultFrameworkID, DefaultProvider: ws.DefaultProvider,
+		PermittedAgentProfiles: ws.PermittedAgentProfiles, PermittedProviders: ws.PermittedProviders}
 	if err := decode(r, &q, 0); err != nil {
 		writeError(w, err)
 		return
