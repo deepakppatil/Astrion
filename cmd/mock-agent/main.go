@@ -1,6 +1,6 @@
 // mock-agent emulates a CLI coding agent running an SDD framework command.
 // It is deterministic and used by local development, CI, and the vertical
-// slice. Behavior can be steered with tags in the "instructions" input:
+// slice. Behavior can be steered with tags in any string input:
 //
 //	[mock:no-hitl]        complete without asking a question
 //	[mock:approval]       ask for an approval instead of a multiple-choice question
@@ -87,7 +87,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "parse invocation:", err)
 		os.Exit(2)
 	}
-	instr, _ := inv.Inputs["instructions"].(string)
+	// Tags may appear in any string input (commands define their own inputs).
+	var parts []string
+	for _, v := range inv.Inputs {
+		if sv, ok := v.(string); ok {
+			parts = append(parts, sv)
+		}
+	}
+	instr := strings.Join(parts, " ")
 	has := func(tag string) bool { return strings.Contains(instr, "[mock:"+tag+"]") }
 	pause := func() {
 		if has("slow") {
